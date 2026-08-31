@@ -1,0 +1,12 @@
+/* Trimmed to the settings under test. Two targets, as a real project has: the
+   app and its UI-test bundle. The app was fixed; the test bundle was not. */
+		buildSettings = {
+			PRODUCT_BUNDLE_IDENTIFIER = ai.example.app;
+			IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+			TARGETED_DEVICE_FAMILY = 1;
+		};
+		buildSettings = {
+			PRODUCT_BUNDLE_IDENTIFIER = ai.example.app.uitests;
+			IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+			TARGETED_DEVICE_FAMILY = "1,2";
+		};

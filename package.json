@@ -1,0 +1,25 @@
+{
+  "name": "@myhumblecoder/appstore",
+  "version": "0.1.0",
+  "description": "App Store submission toolkit for native iOS apps: preflight gates, archiving, screenshots and listing sync, all measured rather than asserted.",
+  "type": "module",
+  "bin": { "appstore": "./dist/cli.js" },
+  "exports": { ".": "./dist/index.js" },
+  "files": ["dist", "templates"],
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm run build && npm test"
+  },
+  "keywords": ["ios", "app-store", "appstoreconnect", "xcode", "testflight", "screenshots"],
+  "license": "MIT",
+  "repository": { "type": "git", "url": "https://github.com/myhumblecoder-dev/appstore-kit.git" },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}

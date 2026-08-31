@@ -1,0 +1,4 @@
+		buildSettings = {
+			PRODUCT_BUNDLE_IDENTIFIER = ai.example.app;
+			IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+		};

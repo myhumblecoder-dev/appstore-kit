@@ -1,0 +1,10 @@
+		buildSettings = {
+			PRODUCT_BUNDLE_IDENTIFIER = ai.example.app;
+			IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+			TARGETED_DEVICE_FAMILY = 1;
+		};
+		buildSettings = {
+			PRODUCT_BUNDLE_IDENTIFIER = ai.example.app.uitests;
+			IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+			TARGETED_DEVICE_FAMILY = 1;
+		};
