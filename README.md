@@ -105,8 +105,9 @@ simulator health with `--fix`, and App Store Connect credentials.
 
 ## Status
 
-`check` and `doctor` ship today. `screenshots`, `archive` and `metadata` are ported next
-— see the repo issues.
+`check` and `doctor` ship today. `screenshots`, `archive` and `metadata` are ported
+next; see [ROADMAP.md](ROADMAP.md), which records why each check exists and what it
+cost to learn.
 
 ## Licence
 
