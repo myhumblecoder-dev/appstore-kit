@@ -34,15 +34,20 @@ async function main(): Promise<number> {
   }
 }
 
+// process.exitCode, NOT process.exit(): writes to a pipe or file are
+// asynchronous, and exiting immediately after the final write truncates them.
+// `appstore check > report.txt` or `| tee` in CI could lose the tail of the
+// report, including the "N of M checks failed" line the exit code refers to.
 main()
-  .then((code) => process.exit(code))
+  .then((code) => { process.exitCode = code; })
   .catch((err: unknown) => {
     // A missing or malformed config is a user error with a clear fix; anything
     // else is a bug here and deserves its stack.
     if (err instanceof ConfigError) {
       process.stderr.write(`\n${err.message}\n\n`);
-      process.exit(2);
+      process.exitCode = 2;
+      return;
     }
     process.stderr.write(`\n${err instanceof Error ? err.stack : String(err)}\n\n`);
-    process.exit(2);
+    process.exitCode = 2;
   });

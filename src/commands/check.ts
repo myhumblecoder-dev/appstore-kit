@@ -3,7 +3,7 @@ import { readFileSync, existsSync, readdirSync } from "node:fs";
 import { DEVICE_FAMILY_VALUES, loadConfig } from "../config.js";
 import { Report } from "../lib/report.js";
 import {
-  buildSettingValues, plistHasKey, plistText, plistValue, pngHasAlpha, xcodegen,
+  buildSettingValues, plistHasKey, plistText, plistValue, pngHasAlpha, urlSchemes, xcodegen,
 } from "../lib/xcode.js";
 import { run } from "../lib/exec.js";
 
@@ -52,14 +52,19 @@ export async function check(opts: CheckOptions): Promise<number> {
       );
     }
 
+    // Both of these pass when ANY target carries the value — test bundles
+    // legitimately differ — so the observed slot prints every value found, not
+    // the configured one. Printing `c.bundleId` on the pass path echoed the
+    // config back and hid a project whose app target had drifted while some
+    // other target still matched.
     const ids = buildSettingValues(pbx, "PRODUCT_BUNDLE_IDENTIFIER");
     ids.has(c.bundleId)
-      ? r.pass("bundle id", c.bundleId)
+      ? r.pass("bundle id", [...ids].join(", "))
       : r.fail("bundle id", `${[...ids].join(", ") || "(none)"} — expected ${c.bundleId}`);
 
     const targets = buildSettingValues(pbx, "IPHONEOS_DEPLOYMENT_TARGET");
     targets.has(c.deploymentTarget)
-      ? r.pass("deployment target", c.deploymentTarget)
+      ? r.pass("deployment target", [...targets].join(", "))
       : r.fail("deployment target", `${[...targets].join(", ") || "(none)"} — expected ${c.deploymentTarget}`);
   }
 
@@ -73,11 +78,22 @@ export async function check(opts: CheckOptions): Promise<number> {
       : r.pass("no UIBackgroundModes");
   }
 
-  const plistDump = plistText(plist);
+  // Scoped to CFBundleURLTypes, not a substring search of the whole plist. The
+  // dump contains every key and value, so a scheme that happened to match a
+  // CFBundleName or an ATS domain satisfied the old check while the callback
+  // was never registered.
+  const registered = urlSchemes(plist);
   for (const scheme of c.urlSchemes) {
-    plistDump.includes(`"${scheme}"`)
-      ? r.pass(`URL scheme ${scheme}://`)
-      : r.fail(`URL scheme ${scheme}://`, "not registered — a callback has nothing to match on");
+    if (registered === null) {
+      r.fail(`URL scheme ${scheme}://`, `could not read CFBundleURLTypes from ${plist}`);
+    } else if (registered.includes(scheme)) {
+      r.pass(`URL scheme ${scheme}://`, `CFBundleURLSchemes = ${registered.join(", ")}`);
+    } else {
+      r.fail(
+        `URL scheme ${scheme}://`,
+        `CFBundleURLSchemes = ${registered.join(", ") || "(none)"} — a callback has nothing to match on`,
+      );
+    }
   }
 
   if (c.capabilities.push) {
@@ -95,18 +111,32 @@ export async function check(opts: CheckOptions): Promise<number> {
   } else {
     for (const icon of icons) {
       const alpha = pngHasAlpha(join(iconDir, icon));
-      alpha === false
-        ? r.pass(`${icon} has no alpha channel`)
-        : r.fail(`${icon} alpha channel`, "present — App Store Connect rejects the upload outright");
+      if (alpha === false) {
+        r.pass(`${icon} has no alpha channel`, "sips hasAlpha: no");
+      } else if (alpha === true) {
+        r.fail(`${icon} alpha channel`, "present — App Store Connect rejects the upload outright");
+      } else {
+        // null means sips could not be read, which is not the same as alpha
+        // being present. Saying "present" would assert a measurement never made.
+        r.fail(`${icon} alpha channel`, "could not be read by sips — unverified, treat as unfit to submit");
+      }
     }
   }
 
   r.section("Guideline arguments that are properties of the source");
   if (c.checks.noInAppViewer) {
-    const hits = grepTree(projectDir, IN_APP_VIEWERS);
-    hits.length === 0
-      ? r.pass("no in-app content viewer", "3.1.3(e) holds")
-      : r.fail("an in-app content viewer appeared", hits.join(", "));
+    const scan = grepTree(projectDir, IN_APP_VIEWERS);
+    if (scan.error) {
+      r.fail("could not search for an in-app content viewer", scan.error);
+    } else if (scan.scanned === 0) {
+      // Zero files searched is not zero matches. Passing here would print a
+      // green guideline argument backed by nothing.
+      r.fail("no .swift files to search for an in-app content viewer", `none found under ${projectDir}`);
+    } else if (scan.hits.length === 0) {
+      r.pass("no in-app content viewer", `0 hits in ${scan.scanned} .swift files under ${c.projectDir}`);
+    } else {
+      r.fail("an in-app content viewer appeared", `${scan.hits.join(", ")} (of ${scan.scanned} .swift files)`);
+    }
   }
   for (const file of c.checks.noThirdPartySignIn) {
     const full = path(file);
@@ -135,12 +165,43 @@ export async function check(opts: CheckOptions): Promise<number> {
   return 0;
 }
 
-/** Files under `dir` whose contents match `pattern`, excluding build output. */
-function grepTree(dir: string, pattern: RegExp): string[] {
+interface Scan {
+  /** Files whose contents match, relative to `dir`. */
+  hits: string[];
+  /** How many .swift files were actually read. */
+  scanned: number;
+  /** Set when grep itself failed, rather than simply finding nothing. */
+  error: string | null;
+}
+
+/**
+ * Files under `dir` whose contents match `pattern`, excluding build output.
+ *
+ * Reports the SEARCH SPACE alongside the hits, and separates "found nothing"
+ * from "could not look". grep exits 1 with no output when there are no matches
+ * and 2 when the path is wrong or unreadable — both of which used to arrive
+ * here as an empty stdout, indistinguishable from a clean tree. A guideline
+ * argument that "holds" because a typo'd projectDir matched zero files is the
+ * exact defect this package exists to catch.
+ */
+function grepTree(dir: string, pattern: RegExp): Scan {
+  const files = run("/usr/bin/find", [
+    dir, "-name", "*.swift",
+    "-not", "-path", "*/.build/*",
+    "-not", "-path", "*/DerivedData/*",
+  ]);
+  const scanned = files.stdout.split("\n").filter(Boolean).length;
+
   const res = run("/usr/bin/grep", ["-rlE", pattern.source, dir, "--include=*.swift"]);
-  return res.stdout.split("\n").filter(Boolean)
+  // 0 = matched, 1 = no match. Anything else is grep failing, not a clean tree.
+  if (res.status !== 0 && res.status !== 1) {
+    return { hits: [], scanned, error: (res.stderr || `grep exited ${res.status}`).trim().slice(0, 200) };
+  }
+
+  const hits = res.stdout.split("\n").filter(Boolean)
     .filter((f) => !f.includes("/.build/") && !f.includes("/DerivedData/"))
     .map((f) => f.replace(`${dir}/`, ""));
+  return { hits, scanned, error: null };
 }
 
 function lastMeaningfulLine(out: string): string {

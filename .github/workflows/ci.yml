@@ -1,0 +1,79 @@
+name: CI
+
+# Runs on every pull request and on main. Until now the only automated gate
+# in this repo was `prepublishOnly`, which fires on `npm publish` — long after
+# a bad merge, and only for whoever happens to publish.
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+concurrency:
+  # Keyed per-PR rather than per-branch, so unrelated runs can't cancel each
+  # other when two PRs share a branch name.
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    # macOS, not ubuntu, because this package only ever runs on macOS: every
+    # reader shells out to plutil, sips, security, xcodebuild or xcodegen. The
+    # unit tests are pure functions over text and would pass on Linux, which is
+    # exactly why running them there would prove less than it appears to.
+    runs-on: macos-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # The floor declared in package.json engines. Testing the floor
+          # rather than the latest is the point: test/xcode.test.ts uses
+          # import.meta.dirname, which needs 20.11+, and a newer runner would
+          # hide it if that floor were ever wrong.
+          node-version: 20
+          cache: npm
+
+      - name: Install
+        # `npm ci` rather than `npm install` so a package-lock.json that has
+        # drifted from package.json fails here instead of resolving silently
+        # to something no one tested.
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      - name: Smoke the built CLI
+        # `npm test` never loads dist/. These three assertions cover the exit
+        # codes the CLI promises, and would have caught the process.exit()
+        # truncation bug that lost the tail of a redirected report.
+        run: |
+          # GitHub runs `run:` blocks with `bash -e`, so a command that exits
+          # non-zero aborts the step before the next line. Two of these three
+          # assertions EXPECT a non-zero exit, so each uses `|| rc=$?` — the
+          # only form that both survives -e and captures the code.
+          set -uo pipefail
+          fail() { echo "smoke: $1"; exit 1; }
+
+          rc=0; node dist/cli.js --help > /tmp/help.txt 2>&1 || rc=$?
+          [ "$rc" -eq 0 ] || fail "--help exited $rc, want 0"
+          [ -s /tmp/help.txt ] || fail "--help wrote nothing"
+
+          rc=0; node dist/cli.js bogus > /dev/null 2>&1 || rc=$?
+          [ "$rc" -eq 2 ] || fail "unknown command exited $rc, want 2"
+
+          # Run from a directory with no appstore.config.json anywhere above it.
+          rc=0
+          ( cd /tmp && node "$GITHUB_WORKSPACE/dist/cli.js" check > /tmp/nocfg.txt 2>&1 ) || rc=$?
+          [ "$rc" -eq 2 ] || fail "missing config exited $rc, want 2"
+          grep -q "appstore.config.json" /tmp/nocfg.txt || fail "missing config did not name the file"
+
+          echo "smoke: ok (help, unknown command, missing config)"

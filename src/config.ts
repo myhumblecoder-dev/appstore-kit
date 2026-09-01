@@ -109,7 +109,11 @@ export function loadConfig(from?: string): LoadedConfig {
 
   const r = raw as Partial<AppStoreConfig>;
   const family = r.deviceFamily ?? "iphone";
-  if (!(family in DEVICE_FAMILY_VALUES)) {
+  // Object.hasOwn, not `in`: `in` walks the prototype chain, so
+  // "deviceFamily": "toString" (or constructor, valueOf, hasOwnProperty)
+  // validated, and DEVICE_FAMILY_VALUES[family] then handed `check` a function
+  // to compare TARGETED_DEVICE_FAMILY against.
+  if (!Object.hasOwn(DEVICE_FAMILY_VALUES, family)) {
     throw new ConfigError(
       `${CONFIG_NAME}: "deviceFamily" must be one of ${Object.keys(DEVICE_FAMILY_VALUES).join(", ")}, got "${family}"`,
     );
