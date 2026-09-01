@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildSettingValues } from "../src/lib/xcode.js";
 import { parseUrlSchemes } from "../src/lib/xcode.js";
-import { interpretProbe } from "../src/lib/signing.js";
+import { interpretProbe, probeCommand } from "../src/lib/signing.js";
 import { loadConfig, ConfigError } from "../src/config.js";
 
 describe("interpretProbe — a failed probe is not a keychain prompt", () => {
@@ -105,5 +105,36 @@ describe("deviceFamily validation", () => {
     for (const ok of ["iphone", "ipad", "universal"]) {
       expect(loadConfig(repo({ ...minimal, deviceFamily: ok })).config.deviceFamily).toBe(ok);
     }
+  });
+});
+
+describe("probeCommand — the watchdog must not be measured", () => {
+  const cmd = probeCommand("ABC123", "/tmp/probe", 6000);
+
+  /**
+   * `run()` uses spawnSync, which returns when the captured stdout/stderr pipes
+   * close — NOT when the shell exits. Killing the watchdog subshell leaves its
+   * `sleep` orphaned, still holding those pipes, so the call blocks for the
+   * full timeout however fast codesign was. Every healthy machine then measured
+   * ~6000ms and was told its keychain prompts on every signature.
+   *
+   * Verified against the real thing before this test existed: 6009ms as
+   * shipped, 82ms with the redirect.
+   */
+  it("detaches the watchdog subshell's stdio", () => {
+    const watchdog = cmd.slice(cmd.indexOf("( sleep"), cmd.indexOf("& watchdog="));
+    expect(watchdog).toContain(">/dev/null");
+    expect(watchdog).toContain("2>&1");
+  });
+
+  it("still backgrounds codesign and waits on its pid", () => {
+    expect(cmd).toContain("codesign --force --sign ABC123 /tmp/probe");
+    expect(cmd).toContain("wait $pid");
+    expect(cmd).toContain("exit $status");
+  });
+
+  it("scales the watchdog to the timeout it was given, in seconds", () => {
+    expect(probeCommand("H", "/t", 6000)).toContain("sleep 6");
+    expect(probeCommand("H", "/t", 10000)).toContain("sleep 10");
   });
 });

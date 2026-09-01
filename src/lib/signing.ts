@@ -75,13 +75,30 @@ export function keychainPromptsForSigning(identityHash: string, timeoutMs = 6000
   const copy = run("/bin/cp", ["/bin/echo", tmp]);
   if (!copy.ok) return { prompts: null, detail: `could not stage a probe binary at ${tmp}` };
   const started = Date.now();
-  const res = run("/bin/sh", ["-c",
-    `codesign --force --sign ${identityHash} ${tmp} >/dev/null 2>&1 & pid=$!; ` +
-    `( sleep ${timeoutMs / 1000}; kill -9 $pid 2>/dev/null ) & watchdog=$!; ` +
-    `wait $pid 2>/dev/null; status=$?; kill -9 $watchdog 2>/dev/null; exit $status`,
-  ]);
+  const res = run("/bin/sh", ["-c", probeCommand(identityHash, tmp, timeoutMs)]);
   run("/bin/rm", ["-f", tmp]);
   return interpretProbe(res.status, Date.now() - started, timeoutMs);
+}
+
+/**
+ * PURE. The shell the probe runs.
+ *
+ * Extracted so the redirect below is testable. It is one `>/dev/null` and it is
+ * the difference between measuring codesign and measuring the watchdog.
+ */
+export function probeCommand(identityHash: string, tmp: string, timeoutMs: number): string {
+  return (
+    `codesign --force --sign ${identityHash} ${tmp} >/dev/null 2>&1 & pid=$!; ` +
+    // The watchdog's stdio MUST be detached. spawnSync captures stdout/stderr
+    // and returns when those pipes close, not when the shell exits — and
+    // killing the subshell leaves its `sleep` orphaned, still holding them. So
+    // every fast, successful signature measured the full timeout instead of
+    // codesign, and the elapsed-time branch below then reported a perfectly
+    // healthy keychain as "a prompt appeared and was answered", on every
+    // machine. The probe was measuring itself.
+    `( sleep ${timeoutMs / 1000}; kill -9 $pid 2>/dev/null ) >/dev/null 2>&1 </dev/null & watchdog=$!; ` +
+    `wait $pid 2>/dev/null; status=$?; kill -9 $watchdog 2>/dev/null; exit $status`
+  );
 }
 
 /**
