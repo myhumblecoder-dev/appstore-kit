@@ -43,17 +43,20 @@ export async function doctor(opts: DoctorOptions): Promise<number> {
     : r.fail("team id", "no provisioning profiles installed — open the project in Xcode once to create one");
 
   if (dist.length) {
-    const prompts = keychainPromptsForSigning(dist[0]!.hash);
-    if (prompts === false) {
-      r.pass("keychain", "codesign uses the distribution key without prompting");
-    } else if (prompts === true) {
+    const probe = keychainPromptsForSigning(dist[0]!.hash);
+    if (probe.prompts === false) {
+      r.pass("keychain", probe.detail);
+    } else if (probe.prompts === true) {
       r.fail(
         "keychain prompts on every signature",
-        "an archive signs several times and an unanswered prompt fails it as " +
+        `${probe.detail}. An archive signs several times and an unanswered prompt fails it as ` +
         `errSecInternalComponent, hundreds of lines into the log. Fix once with:\n      ${PARTITION_LIST_FIX}`,
       );
     } else {
-      r.note("Could not probe the keychain ACL");
+      // Deliberately a note, not a failure: the probe not working tells you
+      // nothing about the keychain, and claiming otherwise sent people to
+      // set-key-partition-list on machines that were fine.
+      r.note(`Could not probe the keychain ACL — ${probe.detail}`);
     }
   }
 

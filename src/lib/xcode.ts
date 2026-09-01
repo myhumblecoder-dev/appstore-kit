@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { run, runOrThrow } from "./exec.js";
+import { run } from "./exec.js";
 
 /**
  * Readers for the generated Xcode artifacts.
@@ -21,7 +21,12 @@ import { run, runOrThrow } from "./exec.js";
  */
 export function buildSettingValues(pbxproj: string, key: string): Set<string> {
   const values = new Set<string>();
-  const re = new RegExp(`^\\s*${key}\\s*=\\s*([^;]+);`, "gm");
+  // [^;\n]+ rather than [^;]+ : a character class matches newlines, so a
+  // multi-line list value (OTHER_LDFLAGS = (\n "-ObjC",\n);) would swallow
+  // every line up to the first semicolon and report it as one value.
+  // The key is escaped because it is interpolated into a pattern.
+  const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const re = new RegExp(`^\\s*${escaped}\\s*=\\s*([^;\n]+);`, "gm");
   for (const m of pbxproj.matchAll(re)) {
     const raw = (m[1] ?? "").trim();
     values.add(raw.replace(/^"(.*)"$/, "$1"));
@@ -60,11 +65,47 @@ export function xcodegen(projectDir: string): { ok: boolean; detail: string } {
   return { ok: res.ok, detail: (res.stderr || res.stdout).trim().slice(0, 300) };
 }
 
-/** True when the PNG carries an alpha channel — App Store Connect rejects those icons. */
+/**
+ * Every scheme registered under CFBundleURLTypes. Null when it cannot be read.
+ *
+ * Scoped rather than a substring search of `plutil -p`: the dump contains every
+ * key and value in the file, so a scheme that also appeared as a CFBundleName
+ * or an ATS domain would satisfy a naive `includes()` while no callback was
+ * registered at all.
+ */
+export function urlSchemes(plistPath: string): string[] | null {
+  if (!existsSync(plistPath)) return null;
+  const res = run("/usr/bin/plutil", ["-extract", "CFBundleURLTypes", "json", "-o", "-", plistPath]);
+  // A non-zero exit here means the key is absent, which is a real answer:
+  // no CFBundleURLTypes means no schemes are registered.
+  if (!res.ok) return [];
+  return parseUrlSchemes(res.stdout);
+}
+
+/** PURE. Schemes out of the JSON `plutil -extract CFBundleURLTypes json` prints. */
+export function parseUrlSchemes(json: string): string[] | null {
+  try {
+    const types = JSON.parse(json) as Array<{ CFBundleURLSchemes?: string[] }>;
+    if (!Array.isArray(types)) return null;
+    return types.flatMap((t) => (Array.isArray(t?.CFBundleURLSchemes) ? t.CFBundleURLSchemes : []));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * True when the PNG carries an alpha channel — App Store Connect rejects those.
+ *
+ * Null when sips could not answer. Deliberately does NOT throw: this runs
+ * inside a loop over every icon, and one unreadable file used to unwind the
+ * whole command, discarding every check already gathered and printing a stack
+ * trace instead of a report.
+ */
 export function pngHasAlpha(file: string): boolean | null {
   if (!existsSync(file)) return null;
-  const out = runOrThrow("/usr/bin/sips", ["-g", "hasAlpha", file]);
-  const m = out.match(/hasAlpha:\s*(\w+)/);
+  const res = run("/usr/bin/sips", ["-g", "hasAlpha", file]);
+  if (!res.ok) return null;
+  const m = res.stdout.match(/hasAlpha:\s*(\w+)/);
   return m ? m[1] === "yes" : null;
 }
 
@@ -72,8 +113,9 @@ export interface PngSize { width: number; height: number }
 
 export function pngSize(file: string): PngSize | null {
   if (!existsSync(file)) return null;
-  const out = runOrThrow("/usr/bin/sips", ["-g", "pixelWidth", "-g", "pixelHeight", file]);
-  const w = out.match(/pixelWidth:\s*(\d+)/);
-  const h = out.match(/pixelHeight:\s*(\d+)/);
+  const res = run("/usr/bin/sips", ["-g", "pixelWidth", "-g", "pixelHeight", file]);
+  if (!res.ok) return null;
+  const w = res.stdout.match(/pixelWidth:\s*(\d+)/);
+  const h = res.stdout.match(/pixelHeight:\s*(\d+)/);
   return w && h ? { width: Number(w[1]), height: Number(h[1]) } : null;
 }

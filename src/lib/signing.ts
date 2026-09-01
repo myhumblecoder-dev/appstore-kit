@@ -44,6 +44,13 @@ export function teamIdsFromProfiles(): string[] {
   return [...teams];
 }
 
+/** Outcome of the keychain probe. `prompts: null` means it could not be measured. */
+export interface KeychainProbe {
+  prompts: boolean | null;
+  /** What was actually observed — printed, so neither verdict is a bare claim. */
+  detail: string;
+}
+
 /**
  * Whether `codesign` can use a key without raising a keychain prompt.
  *
@@ -54,11 +61,19 @@ export function teamIdsFromProfiles(): string[] {
  *
  * Signing a throwaway copy is the only reliable probe — the ACL is not
  * otherwise readable without itself prompting.
+ *
+ * The exit status is read rather than just "did it work". Only a watchdog kill
+ * (137 = 128 + SIGKILL) means codesign was still waiting, which is what a
+ * SecurityAgent dialog looks like from here. Any OTHER non-zero exit — an
+ * expired or untrusted certificate, an identity not valid for signing,
+ * codesign missing from PATH — is a failure to MEASURE, not evidence of a
+ * prompt. Treating those as "prompts" told people to run
+ * set-key-partition-list on machines whose keychain was fine.
  */
-export function keychainPromptsForSigning(identityHash: string, timeoutMs = 6000): boolean | null {
+export function keychainPromptsForSigning(identityHash: string, timeoutMs = 6000): KeychainProbe {
   const tmp = join(process.env.TMPDIR ?? "/tmp", `appstore-kit-signprobe-${process.pid}`);
   const copy = run("/bin/cp", ["/bin/echo", tmp]);
-  if (!copy.ok) return null;
+  if (!copy.ok) return { prompts: null, detail: `could not stage a probe binary at ${tmp}` };
   const started = Date.now();
   const res = run("/bin/sh", ["-c",
     `codesign --force --sign ${identityHash} ${tmp} >/dev/null 2>&1 & pid=$!; ` +
@@ -66,10 +81,35 @@ export function keychainPromptsForSigning(identityHash: string, timeoutMs = 6000
     `wait $pid 2>/dev/null; status=$?; kill -9 $watchdog 2>/dev/null; exit $status`,
   ]);
   run("/bin/rm", ["-f", tmp]);
-  // A key with codesign in its partition list signs in milliseconds. Anything
-  // near the timeout means SecurityAgent put a dialog on screen.
-  if (!res.ok) return true;
-  return Date.now() - started > timeoutMs - 1000;
+  return interpretProbe(res.status, Date.now() - started, timeoutMs);
+}
+
+/**
+ * PURE. Turn a codesign exit status and duration into a verdict.
+ *
+ * Separated from the shell-out so the distinction this function exists to make
+ * is testable: only 137 (128 + SIGKILL, the watchdog firing) means codesign was
+ * still blocked. Every other non-zero exit is a failure to measure. The version
+ * that returned `true` for any non-zero exit told people to run
+ * set-key-partition-list because their certificate had expired.
+ */
+export function interpretProbe(status: number | null, elapsedMs: number, timeoutMs: number): KeychainProbe {
+  if (status === 137) {
+    return { prompts: true, detail: `codesign did not return within ${timeoutMs / 1000}s (killed by watchdog)` };
+  }
+  if (status !== 0) {
+    return {
+      prompts: null,
+      detail: `codesign exited ${status} without prompting — probe inconclusive (check the certificate is valid for signing)`,
+    };
+  }
+  // A key with codesign in its partition list signs in milliseconds. Signing
+  // that succeeded but took most of the timeout means a dialog appeared and
+  // someone answered it.
+  if (elapsedMs > timeoutMs - 1000) {
+    return { prompts: true, detail: `codesign took ${elapsedMs}ms — a prompt appeared and was answered` };
+  }
+  return { prompts: false, detail: `signed a probe binary in ${elapsedMs}ms without prompting` };
 }
 
 export const PARTITION_LIST_FIX =
