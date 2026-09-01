@@ -56,21 +56,23 @@ jobs:
         # codes the CLI promises, and would have caught the process.exit()
         # truncation bug that lost the tail of a redirected report.
         run: |
+          # GitHub runs `run:` blocks with `bash -e`, so a command that exits
+          # non-zero aborts the step before the next line. Two of these three
+          # assertions EXPECT a non-zero exit, so each uses `|| rc=$?` — the
+          # only form that both survives -e and captures the code.
           set -uo pipefail
           fail() { echo "smoke: $1"; exit 1; }
 
-          node dist/cli.js --help > /tmp/help.txt 2>&1
-          rc=$?
+          rc=0; node dist/cli.js --help > /tmp/help.txt 2>&1 || rc=$?
           [ "$rc" -eq 0 ] || fail "--help exited $rc, want 0"
           [ -s /tmp/help.txt ] || fail "--help wrote nothing"
 
-          node dist/cli.js bogus > /dev/null 2>&1
-          rc=$?
+          rc=0; node dist/cli.js bogus > /dev/null 2>&1 || rc=$?
           [ "$rc" -eq 2 ] || fail "unknown command exited $rc, want 2"
 
           # Run from a directory with no appstore.config.json anywhere above it.
-          ( cd /tmp && node "$GITHUB_WORKSPACE/dist/cli.js" check > /tmp/nocfg.txt 2>&1 )
-          rc=$?
+          rc=0
+          ( cd /tmp && node "$GITHUB_WORKSPACE/dist/cli.js" check > /tmp/nocfg.txt 2>&1 ) || rc=$?
           [ "$rc" -eq 2 ] || fail "missing config exited $rc, want 2"
           grep -q "appstore.config.json" /tmp/nocfg.txt || fail "missing config did not name the file"
 
